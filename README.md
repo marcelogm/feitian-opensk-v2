@@ -81,3 +81,7 @@ Wasefire's USB update, which does not need DFU.
 | `patches/wasefire-feitian-unpin.patch` | runner patch: features `feitian-unpin`, `feitian-button-p018` |
 | `uicr-fix/` | optional diagnostic firmware: UICR report and bootloader dump over USB serial (`scripts/50-uicr-report.sh`, before the fix only). Don't use its `FIX`/`UNPIN` commands. |
 | `tools/touch_test.py` | CTAP2 touch test |
+
+## License
+
+Apache-2.0, see [LICENSE](LICENSE). The patch modifies [Wasefire](https://github.com/google/wasefire), also Apache-2.0.
