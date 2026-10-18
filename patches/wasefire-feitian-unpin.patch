@@ -1,0 +1,118 @@
+diff --git a/crates/runner-nordic/Cargo.toml b/crates/runner-nordic/Cargo.toml
+index e944075e..638b7a92 100644
+--- a/crates/runner-nordic/Cargo.toml
++++ b/crates/runner-nordic/Cargo.toml
+@@ -66,6 +66,8 @@ features = [
+ [features]
+ aes128-ccm = ["_crypto", "dep:typenum", "wasefire-scheduler/board-api-crypto-aes128-ccm"]
+ ble-adv = ["_vendor", "dep:ble-adv", "dep:rubble", "dep:rubble-nrf5x"]
++feitian-button-p018 = []
++feitian-unpin = []
+ fpc2534 = ["fpc2534-sensor", "wasefire-scheduler/board-api-fingerprint-matcher"]
+ fpc2534-sensor = ["_gpio_port1", "dep:bytemuck", "wasefire-scheduler/board-api-fingerprint-sensor"]
+ gpio = ["_gpio_port1", "_vendor", "wasefire-scheduler/board-api-gpio"]
+diff --git a/crates/runner-nordic/src/board.rs b/crates/runner-nordic/src/board.rs
+index e09483c9..2666e7f4 100644
+--- a/crates/runner-nordic/src/board.rs
++++ b/crates/runner-nordic/src/board.rs
+@@ -33,6 +33,8 @@ mod rng;
+ pub mod timer;
+ #[cfg(feature = "uart")]
+ pub mod uart;
++#[cfg(feature = "feitian-unpin")]
++pub mod unpin;
+ pub mod usb;
+ #[cfg(feature = "_vendor")]
+ pub mod vendor;
+diff --git a/crates/runner-nordic/src/board/unpin.rs b/crates/runner-nordic/src/board/unpin.rs
+new file mode 100644
+index 00000000..be8d5c5e
+--- /dev/null
++++ b/crates/runner-nordic/src/board/unpin.rs
+@@ -0,0 +1,61 @@
++// Copyright 2026 Google LLC
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++
++//! One-shot UICR fix: unpin the reset line (PSELRESET[1] = 0x10).
++//!
++//! Writes only when the UICR is exactly in the state of a Feitian dongle with the bootloader
++//! at 0xE0000 and both PSELRESET words equal to 0x12. Any other state is left untouched. No
++//! erase, no retry, no panic.
++
++use nrf52840_hal::pac::NVMC;
++
++const UICR_NRFFW0: *const u32 = 0x1000_1014 as *const u32;
++const UICR_PSELRESET0: *const u32 = 0x1000_1200 as *const u32;
++const UICR_PSELRESET1: *mut u32 = 0x1000_1204 as *mut u32;
++
++const BOOTLOADER_ADDR: u32 = 0x000E_0000;
++const PSELRESET_P0_18: u32 = 0x0000_0012;
++const PSELRESET_UNPINNED: u32 = 0x0000_0010;
++
++const CONFIG_REN: u32 = 0;
++const CONFIG_WEN: u32 = 1;
++
++fn wait_ready(nvmc: &NVMC) {
++    while nvmc.ready.read().ready().is_busy() {}
++}
++
++fn set_config(nvmc: &NVMC, bits: u32) {
++    // SAFETY: CONFIG accepts REN (0) and WEN (1).
++    nvmc.config.write(|w| unsafe { w.bits(bits) });
++    wait_ready(nvmc);
++}
++
++pub fn run(nvmc: &NVMC) {
++    // SAFETY: Fixed, always-mapped UICR addresses (word aligned).
++    let (fw, p0, p1) = unsafe {
++        (
++            core::ptr::read_volatile(UICR_NRFFW0),
++            core::ptr::read_volatile(UICR_PSELRESET0),
++            core::ptr::read_volatile(UICR_PSELRESET1),
++        )
++    };
++    if fw != BOOTLOADER_ADDR || p0 != PSELRESET_P0_18 || p1 != PSELRESET_P0_18 {
++        return;
++    }
++    set_config(nvmc, CONFIG_WEN);
++    // SAFETY: Single word write to an erased-bit-compatible UICR word with WEN enabled.
++    unsafe { core::ptr::write_volatile(UICR_PSELRESET1, PSELRESET_UNPINNED) };
++    wait_ready(nvmc);
++    set_config(nvmc, CONFIG_REN);
++}
+diff --git a/crates/runner-nordic/src/main.rs b/crates/runner-nordic/src/main.rs
+index 891500fd..2f61dae6 100644
+--- a/crates/runner-nordic/src/main.rs
++++ b/crates/runner-nordic/src/main.rs
+@@ -143,6 +143,8 @@ fn main() -> ! {
+     systick::init(c.SYST);
+     log::debug!("Runner starts.");
+     let p = nrf52840_hal::pac::Peripherals::take().unwrap();
++    #[cfg(feature = "feitian-unpin")]
++    board::unpin::run(&p.NVMC);
+     let port0 = gpio::p0::Parts::new(p.P0);
+     #[cfg(feature = "_gpio_port1")]
+     let port1 = gpio::p1::Parts::new(p.P1);
+@@ -153,8 +155,10 @@ fn main() -> ! {
+         Button::new(port0.p0_24.into_pullup_input().degrade()),
+         Button::new(port0.p0_25.into_pullup_input().degrade()),
+     ];
+-    #[cfg(feature = "board-dongle")]
++    #[cfg(all(feature = "board-dongle", not(feature = "feitian-button-p018")))]
+     let buttons = [Button::new(port1.p1_06.into_pullup_input().degrade())];
++    #[cfg(all(feature = "board-dongle", feature = "feitian-button-p018"))]
++    let buttons = [Button::new(port0.p0_18.into_pullup_input().degrade())];
+     #[cfg(feature = "board-makerdiary")]
+     let buttons = [Button::new(port0.p0_18.into_pullup_input().degrade())];
+     #[cfg(feature = "board-devkit")]
